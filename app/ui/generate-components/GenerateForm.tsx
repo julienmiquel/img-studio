@@ -17,7 +17,7 @@
 import * as React from 'react'
 import { useEffect, useState } from 'react'
 
-import { Control, SubmitHandler, useForm, useWatch } from 'react-hook-form'
+import { SubmitHandler, useForm } from 'react-hook-form'
 
 import {
   Accordion,
@@ -33,7 +33,6 @@ import {
 } from '@mui/material'
 import {
   ArrowDownward as ArrowDownwardIcon,
-  ArrowLeft,
   ArrowRight,
   Autorenew,
   Close as CloseIcon,
@@ -75,6 +74,7 @@ import { EditImageFormFields } from '@/app/api/edit-utils'
 import {
   GenerateVideoFormFields,
   GenerateVideoFormI,
+  InterpolImageDefaults,
   InterpolImageI,
   OperationMetadataI,
   tempVeo3specificSettings,
@@ -112,6 +112,7 @@ export default function GenerateForm({
   initialITVimage?: InterpolImageI
   promptIndication?: string
 }) {
+  // --- Component Setup ---
   const {
     handleSubmit,
     resetField,
@@ -125,11 +126,72 @@ export default function GenerateForm({
   })
   const { appContext } = useAppContext()
 
-  // Manage accordions
+  // --- State Management ---
+  // Manages the expanded state of the accordions.
   const [expanded, setExpanded] = React.useState<string | false>('attributes')
-  const handleChange = (panel: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
-    setExpanded(isExpanded ? panel : false)
-  }
+  // Manages whether to use Gemini for prompt rewriting.
+  const [isGeminiRewrite, setIsGeminiRewrite] = useState(true)
+  // Manages the visibility of the image-to-prompt modal.
+  const [imageToPromptOpen, setImageToPromptOpen] = useState(false)
+  // Manages the orientation of the image-to-video input boxes.
+  const [orientation, setOrientation] = useState('horizontal')
+
+  // --- Watched Form Values ---
+  const referenceObjects = watch('referenceObjects')
+  const isVideoWithAudio = watch('isVideoWithAudio')
+  const interpolImageFirst = watch('interpolImageFirst')
+  const interpolImageLast = watch('interpolImageLast')
+  const selectedRatio = watch('aspectRatio')
+  const firstImageRatio = watch('interpolImageFirst.ratio')
+  const lastImageRatio = watch('interpolImageLast.ratio')
+  const currentModel = watch('modelVersion')
+  const currentPrimaryStyle = watch('style')
+  const currentSecondaryStyle = watch('secondary_style')
+
+  // --- Derived and Memoized Values ---
+  // Determines if the form has any valid reference objects.
+  const hasReferences = React.useMemo(
+    () => Array.isArray(referenceObjects) && referenceObjects.some((obj) => obj.base64Image !== ''),
+    [referenceObjects]
+  )
+
+  // Dynamically selects the model version options based on generation type and references.
+  const modelOptionField: selectFieldsI = React.useMemo(() => {
+    if (generationType === 'Video') {
+      return GenerateVideoFormFields.modelVersion
+    }
+    return hasReferences ? EditImageFormFields.modelVersion : GenerateImageFormFields.modelVersion
+  }, [generationType, hasReferences])
+
+  // Determines if the prompt is optional for video generation (e.g., for image-to-video).
+  const optionalVeoPrompt =
+    (interpolImageFirst && interpolImageFirst.base64Image !== '') ||
+    (interpolImageFirst &&
+      interpolImageFirst.base64Image !== '' &&
+      interpolImageLast &&
+      interpolImageLast.base64Image !== '')
+
+  // Determines if the current model supports audio generation.
+  const isAudioAvailable = currentModel.includes('veo-3.0')
+  // Determines if only image-to-video is available for the current model.
+  const isOnlyITVavailable =
+    currentModel.includes('veo-3.0') &&
+    !currentModel.includes('fast') &&
+    process.env.NEXT_PUBLIC_VEO_ITV_ENABLED === 'true'
+  // Determines if advanced features are available for the current model.
+  const isAdvancedFeaturesAvailable =
+    currentModel.includes('veo-2.0') && process.env.NEXT_PUBLIC_VEO_ADVANCED_ENABLED === 'true'
+
+  // Determines the available secondary styles based on the selected primary style.
+  const subImgStyleField = React.useMemo(() => {
+    const { styleOptions, subStyleOptions } = generationFields
+    const selectedStyle = styleOptions.options.find((o) => o.value === currentPrimaryStyle)
+    const subId = selectedStyle ? selectedStyle.subID : styleOptions.defaultSub
+    return subStyleOptions.options.find((o) => o.subID === subId) || subStyleOptions.options[0]
+  }, [currentPrimaryStyle, generationFields])
+
+  // --- Side Effects ---
+  // Manages accordion expansion based on initial image-to-video image.
   useEffect(() => {
     if (generationType === 'Video') {
       if (initialITVimage && initialITVimage.base64Image !== '') setExpanded('interpolation')
@@ -137,53 +199,89 @@ export default function GenerateForm({
     } else if (generationType === 'Image') setExpanded('attributes')
   }, [initialITVimage, generationType])
 
-  // Manage if prompt should be generated with Gemini
-  const [isGeminiRewrite, setIsGeminiRewrite] = useState(true)
+  // Sets the model version to the default for the selected options.
+  useEffect(() => {
+    if (getValues('modelVersion') !== modelOptionField.default) {
+      setValue('modelVersion', modelOptionField.default)
+    }
+  }, [modelOptionField, setValue, getValues])
+
+  // Automatically sets the aspect ratio from the input image if not manually set.
+  useEffect(() => {
+    if (touchedFields.aspectRatio) return
+
+    const imageRatioString = firstImageRatio || lastImageRatio
+
+    if (imageRatioString) {
+      const imageOrientation = getOrientation(imageRatioString)
+      const suggestedRatio = imageOrientation === 'horizontal' ? '16:9' : '9:16'
+
+      setValue('aspectRatio', suggestedRatio)
+    }
+  }, [firstImageRatio, lastImageRatio, touchedFields.aspectRatio, setValue])
+
+  // Updates the UI orientation whenever the aspect ratio changes.
+  useEffect(() => {
+    if (selectedRatio) setOrientation(getOrientation(selectedRatio))
+  }, [selectedRatio])
+
+  // Resets fields based on the selected model's capabilities.
+  useEffect(() => {
+    if (!isAdvancedFeaturesAvailable) {
+      setValue('cameraPreset', '')
+      setValue('interpolImageLast', { ...InterpolImageDefaults, purpose: 'last' })
+
+      if (!isOnlyITVavailable) setValue('interpolImageFirst', { ...InterpolImageDefaults, purpose: 'first' })
+    }
+
+    if (currentModel.includes('veo-2.0')) setValue('resolution', '720p')
+    else if (currentModel.includes('veo-3.0')) setValue('resolution', '1080p')
+  }, [currentModel, isAdvancedFeaturesAvailable, isOnlyITVavailable, setValue])
+
+  // Populates the prompt field from the library's initial prompt.
+  useEffect(() => {
+    if (initialPrompt) setValue('prompt', initialPrompt)
+  }, [initialPrompt, setValue])
+
+  // Populates the image-to-video field from the library's initial image.
+  useEffect(() => {
+    if (initialITVimage) setValue('interpolImageFirst', initialITVimage)
+  }, [initialITVimage, setValue])
+
+  // Resets secondary style if it becomes invalid when primary style changes.
+  useEffect(() => {
+    if (subImgStyleField && currentSecondaryStyle && !subImgStyleField.options.includes(currentSecondaryStyle)) {
+      setValue('secondary_style', '')
+    }
+  }, [currentSecondaryStyle, subImgStyleField, setValue])
+
+  // --- Event Handlers and Helper Functions ---
+  // Handles accordion expansion changes.
+  const handleChange = (panel: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
+    setExpanded(isExpanded ? panel : false)
+  }
+
+  // Handles the Gemini rewrite switch change.
   const handleGeminiRewrite = (event: React.ChangeEvent<HTMLInputElement>) => {
     setIsGeminiRewrite(event.target.checked)
   }
 
-  // Veo 3: manage audio in output
-  const isVideoWithAudio = watch('isVideoWithAudio')
+  // Handles the video audio switch change.
   const handleVideoAudioCheck = (event: React.ChangeEvent<HTMLInputElement>) => {
     setValue('isVideoWithAudio', event.target.checked)
   }
 
-  // Imagen reference management logic
-  const referenceObjects = watch('referenceObjects')
-  const [hasReferences, setHasReferences] = useState(false)
-  const [modelOptionField, setModelOptionField] = useState<selectFieldsI>(GenerateImageFormFields.modelVersion)
-  useEffect(() => {
-    if (generationType === 'Image') {
-      if (referenceObjects.some((obj) => obj.base64Image !== '')) {
-        setHasReferences(true)
-        setModelOptionField(EditImageFormFields.modelVersion)
-        setValue('modelVersion', EditImageFormFields.modelVersion.default)
-      } else {
-        setHasReferences(false)
-        setModelOptionField(GenerateImageFormFields.modelVersion)
-        setValue('modelVersion', GenerateImageFormFields.modelVersion.default)
-      }
-    }
-    if (generationType === 'Video') {
-      setModelOptionField(GenerateVideoFormFields.modelVersion)
-      setValue('modelVersion', GenerateVideoFormFields.modelVersion.default)
-    }
-  }, [JSON.stringify(referenceObjects), generationType])
+  // Removes a reference object from the form.
   const removeReferenceObject = (objectKey: string) => {
-    // Find the reference object to be removed
     const removeReference = referenceObjects.find((obj) => obj.objectKey === objectKey)
     if (!removeReference) return
 
     let updatedReferenceObjects = [...referenceObjects]
 
-    // If reference is an AdditionalImage, remove only it,
-    // otherwise remove all references with the same ID and update the refId of the remaining ones
     if (removeReference.isAdditionalImage) {
       updatedReferenceObjects = referenceObjects.filter((obj) => obj.objectKey !== objectKey)
     } else {
       updatedReferenceObjects = referenceObjects.filter((obj) => obj.refId !== removeReference.refId)
-      // Update refId of remaining objects
       updatedReferenceObjects = updatedReferenceObjects.map((obj) => {
         if (obj.refId > removeReference.refId) return { ...obj, refId: obj.refId - 1 }
         return obj
@@ -193,6 +291,8 @@ export default function GenerateForm({
     if (updatedReferenceObjects.length === 0) setValue('referenceObjects', ReferenceObjectInit)
     else setValue('referenceObjects', updatedReferenceObjects)
   }
+
+  // Adds a new reference object to the form.
   const addNewRefObject = () => {
     if (referenceObjects.length >= maxReferences) return
 
@@ -212,6 +312,8 @@ export default function GenerateForm({
 
     setValue('referenceObjects', updatedReferenceObjects)
   }
+
+  // Adds an additional reference object image to the form.
   const addAdditionalRefObject = (objectKey: string) => {
     if (referenceObjects.length >= maxReferences) return
 
@@ -219,7 +321,6 @@ export default function GenerateForm({
     const associatedObject = referenceObjects.find((obj) => obj.objectKey === objectKey)
     if (!associatedObject) return
 
-    // Use slice to place the Additional Ref object after its parent ref
     const updatedReferenceObjects = [
       ...referenceObjects.slice(0, associatedObjectIndex + 1),
       {
@@ -234,45 +335,6 @@ export default function GenerateForm({
     setValue('referenceObjects', updatedReferenceObjects)
   }
 
-  // Logic to decide if prompt is optional: in case of image-to-video
-  const interpolImageFirst = watch('interpolImageFirst')
-  const interpolImageLast = watch('interpolImageLast')
-  const optionalVeoPrompt =
-    (interpolImageFirst && interpolImageFirst.base64Image !== '') ||
-    (interpolImageFirst &&
-      interpolImageFirst.base64Image !== '' &&
-      interpolImageLast &&
-      interpolImageLast.base64Image !== '')
-
-  // Input image(s) orientation logic for image-to-video
-  const [orientation, setOrientation] = useState('horizontal')
-  const selectedRatio = watch('aspectRatio')
-  const firstImageRatio = watch('interpolImageFirst.ratio')
-  const lastImageRatio = watch('interpolImageLast.ratio')
-
-  // Effect 1: Automatically set aspect ratio from the image, but ONLY if the
-  // user hasn't already made a manual selection.
-  useEffect(() => {
-    if (touchedFields.aspectRatio) return
-
-    const imageRatioString = firstImageRatio || lastImageRatio
-
-    if (imageRatioString) {
-      const imageOrientation = getOrientation(imageRatioString)
-      const suggestedRatio = imageOrientation === 'horizontal' ? '16:9' : '9:16'
-
-      setValue('aspectRatio', suggestedRatio)
-    }
-  }, [firstImageRatio, lastImageRatio, touchedFields.aspectRatio, setValue])
-
-  // Effect 2: This effect correctly updates the UI orientation whenever the
-  // aspect ratio changes, for any reason. No changes are needed here.
-  useEffect(() => {
-    if (selectedRatio) setOrientation(getOrientation(selectedRatio))
-  }, [selectedRatio])
-
-  //TODO temp - remove when Veo 3 is fully released
-  const currentModel = watch('modelVersion')
   // Transforms a "Publisher Model not found" error message into a user-friendly message.
   interface ModelOption {
     value: string
@@ -297,50 +359,12 @@ export default function GenerateForm({
     return errorMessage
   }
 
-  // Image to prompt generator logic
-  const [imageToPromptOpen, setImageToPromptOpen] = useState(false)
-
-  // Provide random prompt
+  // Provides a random prompt from the list of random prompts.
   const getRandomPrompt = () => {
     return randomPrompts[Math.floor(Math.random() * randomPrompts.length)]
   }
 
-  // Handle 'Replay prompt' from Library
-  useEffect(() => {
-    if (initialPrompt) setValue('prompt', initialPrompt)
-  }, [initialPrompt, setValue])
-
-  // Handle Image to video from generated or edited image
-  useEffect(() => {
-    if (initialITVimage) setValue('interpolImageFirst', initialITVimage)
-  }, [initialITVimage, setValue])
-
-  // Update Secondary style dropdown depending on picked primary style
-  const subImgStyleField = (control: Control<GenerateImageFormI | GenerateVideoFormI, any>) => {
-    const currentPrimaryStyle: string = useWatch({ control, name: 'style' })
-
-    var currentAssociatedSubId = generationFields.styleOptions.defaultSub
-    if (currentPrimaryStyle !== '') {
-      currentAssociatedSubId = generationFields.styleOptions.options.filter(
-        (option) => option.value === currentPrimaryStyle
-      )[0].subID
-    }
-
-    const subImgStyleField = generationFields.subStyleOptions.options.filter(
-      (option) => option.subID === currentAssociatedSubId
-    )[0]
-
-    const currentSecondaryStyle: string = getValues('secondary_style')
-    useEffect(() => {
-      if (!subImgStyleField.options.includes(currentSecondaryStyle)) {
-        setValue('secondary_style', '')
-      }
-    }, [currentSecondaryStyle, subImgStyleField.options])
-
-    return subImgStyleField
-  }
-
-  // Does not reset settings - only prompt, prompt parameters, image references and negative prompt
+  // Resets the form to its default state.
   const onReset = () => {
     generationFields.resetableFields.forEach((field) =>
       resetField(field as keyof GenerateImageFormI | keyof GenerateVideoFormI)
@@ -355,6 +379,8 @@ export default function GenerateForm({
     onNewErrorMsg('')
   }
 
+  // --- Form Submission Handlers ---
+  // Handles image generation submission.
   const onImageSubmit: SubmitHandler<GenerateImageFormI> = async (formData) => {
     onRequestSent(true, parseInt(formData.sampleCount))
 
@@ -391,6 +417,7 @@ export default function GenerateForm({
     }
   }
 
+  // Handles video generation submission.
   const onVideoSubmit: SubmitHandler<GenerateVideoFormI> = async (formData) => {
     onRequestSent(true, parseInt(formData.sampleCount))
 
@@ -415,7 +442,7 @@ export default function GenerateForm({
     }
   }
 
-  // Single handler for submitting generation
+  // Main submission handler that delegates to the appropriate generation handler.
   const onSubmit: SubmitHandler<GenerateImageFormI | GenerateVideoFormI> = async (formData) => {
     if (generationType === 'Image') await onImageSubmit(formData as GenerateImageFormI)
     else if (generationType === 'Video') await onVideoSubmit(formData as GenerateVideoFormI)
@@ -472,25 +499,11 @@ export default function GenerateForm({
             required={!optionalVeoPrompt}
             rows={7}
             promptIndication={`${promptIndication}${
-              currentModel === 'veo-3.0-generate-preview'
-                ? ', audio (dialogue/ sound effects/ music/ ambiant sounds)'
-                : ''
+              isAudioAvailable ? ', audio (dialogue/ sound effects/ music/ ambiant sounds)' : ''
             }`}
           />
 
           <Stack justifyContent="flex-end" direction="row" gap={0} pb={3}>
-            <CustomTooltip title="Image to prompt generator" size="small">
-              <IconButton
-                onClick={() => setImageToPromptOpen(true)}
-                aria-label="Prompt Generator"
-                disableRipple
-                sx={{ px: 0.5 }}
-              >
-                <Avatar sx={CustomizedAvatarButton}>
-                  <Mms sx={CustomizedIconButton} />
-                </Avatar>
-              </IconButton>
-            </CustomTooltip>
             <CustomTooltip title="Get prompt ideas" size="small">
               <IconButton
                 onClick={() => setValue('prompt', getRandomPrompt())}
@@ -500,6 +513,18 @@ export default function GenerateForm({
               >
                 <Avatar sx={CustomizedAvatarButton}>
                   <Lightbulb sx={CustomizedIconButton} />
+                </Avatar>
+              </IconButton>
+            </CustomTooltip>
+            <CustomTooltip title="Image to prompt generator" size="small">
+              <IconButton
+                onClick={() => setImageToPromptOpen(true)}
+                aria-label="Prompt Generator"
+                disableRipple
+                sx={{ px: 0.5 }}
+              >
+                <Avatar sx={CustomizedAvatarButton}>
+                  <Mms sx={CustomizedIconButton} />
                 </Avatar>
               </IconButton>
             </CustomTooltip>
@@ -520,16 +545,11 @@ export default function GenerateForm({
               control={control}
               setValue={setValue}
               generalSettingsFields={
-                currentModel === 'veo-3.0-generate-preview' ? tempVeo3specificSettings : generationFields.settings
+                currentModel.includes('veo-3.0') ? tempVeo3specificSettings : generationFields.settings
               }
               advancedSettingsFields={generationFields.advancedSettings}
-              warningMessage={
-                currentModel === 'veo-3.0-generate-preview'
-                  ? 'NB: for now, Veo 3 has fewer setting options than Veo 2!'
-                  : ''
-              }
             />
-            {currentModel.includes('veo-3.0') && (
+            {isAudioAvailable && (
               <CustomTooltip title="Add audio to your video" size="small">
                 <AudioSwitch checked={isVideoWithAudio} onChange={handleVideoAudioCheck} />
               </CustomTooltip>
@@ -607,109 +627,105 @@ export default function GenerateForm({
               </AccordionDetails>
             </Accordion>
           )}
-          {generationType === 'Video' &&
-            process.env.NEXT_PUBLIC_VEO_ENABLED === 'true' &&
-            process.env.NEXT_PUBLIC_VEO_ITV_ENABLED === 'true' && (
-              <Accordion
-                disableGutters
-                expanded={expanded === 'interpolation'}
-                onChange={handleChange('interpolation')}
-                sx={CustomizedAccordion}
+          {generationType === 'Video' && (isOnlyITVavailable || isAdvancedFeaturesAvailable) && (
+            <Accordion
+              disableGutters
+              expanded={expanded === 'interpolation'}
+              onChange={handleChange('interpolation')}
+              sx={CustomizedAccordion}
+            >
+              <AccordionSummary
+                expandIcon={<ArrowDownwardIcon sx={{ color: palette.primary.main }} />}
+                aria-controls="panel1-content"
+                id="panel1-header"
+                sx={CustomizedAccordionSummary}
               >
-                <AccordionSummary
-                  expandIcon={<ArrowDownwardIcon sx={{ color: palette.primary.main }} />}
-                  aria-controls="panel1-content"
-                  id="panel1-header"
-                  sx={CustomizedAccordionSummary}
-                >
-                  <Typography display="inline" variant="body1" sx={{ fontWeight: 500 }}>
-                    {process.env.NEXT_PUBLIC_VEO_ADVANCED_ENABLED === 'true' && !currentModel.includes('veo-3.0')
-                      ? 'Image(s) to video & Camera presets'
-                      : 'Image to video'}
-                  </Typography>
-                </AccordionSummary>
-                {
-                  // Advanced features (interpolation, camera preset) are only available for Veo 2 for now!
-                  process.env.NEXT_PUBLIC_VEO_ADVANCED_ENABLED === 'true' && !currentModel.includes('veo-3.0') && (
-                    <AccordionDetails sx={{ pt: 0, pb: 1, height: 'auto' }}>
-                      <Stack
-                        direction="row"
-                        flexWrap="wrap"
-                        justifyContent="flex-start"
-                        alignItems="flex-start"
-                        spacing={0.5}
-                        sx={{ pt: 1, pb: 1 }}
-                      >
-                        <VideoInterpolBox
-                          label="Base image"
-                          sublabel={'(or first frame)'}
-                          objectKey="interpolImageFirst"
-                          onNewErrorMsg={onNewErrorMsg}
-                          setValue={setValue}
-                          interpolImage={interpolImageFirst}
-                          orientation={orientation}
-                        />
+                <Typography display="inline" variant="body1" sx={{ fontWeight: 500 }}>
+                  {isAdvancedFeaturesAvailable ? 'Image(s) to video & Camera presets' : 'Image to video'}
+                </Typography>
+              </AccordionSummary>
+              {
+                // Advanced features (interpolation, camera preset) are only available for Veo 2 for now!
+                isAdvancedFeaturesAvailable && (
+                  <AccordionDetails sx={{ pt: 0, pb: 1, height: 'auto' }}>
+                    <Stack
+                      direction="row"
+                      flexWrap="wrap"
+                      justifyContent="flex-start"
+                      alignItems="flex-start"
+                      spacing={0.5}
+                      sx={{ pt: 1, pb: 1 }}
+                    >
+                      <VideoInterpolBox
+                        label="Base image"
+                        sublabel={'(or first frame)'}
+                        objectKey="interpolImageFirst"
+                        onNewErrorMsg={onNewErrorMsg}
+                        setValue={setValue}
+                        interpolImage={interpolImageFirst}
+                        orientation={orientation}
+                      />
 
-                        <ArrowRight color={interpolImageLast.base64Image === '' ? 'secondary' : 'primary'} />
-                        <VideoInterpolBox
-                          label="Last frame"
-                          sublabel="(optional)"
-                          objectKey="interpolImageLast"
-                          onNewErrorMsg={onNewErrorMsg}
-                          setValue={setValue}
-                          interpolImage={interpolImageLast}
-                          orientation={orientation}
-                        />
-                      </Stack>
-                      <Box sx={{ py: 2 }}>
-                        <FormInputChipGroup
-                          name="cameraPreset"
-                          label={videoGenerationUtils.cameraPreset.label ?? ''}
-                          control={control}
-                          setValue={setValue}
-                          width="450px"
-                          field={videoGenerationUtils.cameraPreset as chipGroupFieldsI}
-                          required={false}
-                        />
-                      </Box>
-                    </AccordionDetails>
-                  )
-                }
-                {
-                  // Advanced features (interpolation, camera preset) are only available for Veo 2 for now!
-                  !(process.env.NEXT_PUBLIC_VEO_ADVANCED_ENABLED === 'true' && !currentModel.includes('veo-3.0')) && (
-                    <AccordionDetails sx={{ pt: 0, pb: 1, height: 'auto' }}>
-                      <Stack
-                        direction="row"
-                        flexWrap="wrap"
-                        justifyContent="flex-start"
-                        alignItems="flex-start"
-                        spacing={0.5}
-                        sx={{ pt: 1, pb: 1 }}
+                      <ArrowRight color={interpolImageLast.base64Image === '' ? 'secondary' : 'primary'} />
+                      <VideoInterpolBox
+                        label="Last frame"
+                        sublabel="(optional)"
+                        objectKey="interpolImageLast"
+                        onNewErrorMsg={onNewErrorMsg}
+                        setValue={setValue}
+                        interpolImage={interpolImageLast}
+                        orientation={orientation}
+                      />
+                    </Stack>
+                    <Box sx={{ py: 2 }}>
+                      <FormInputChipGroup
+                        name="cameraPreset"
+                        label={videoGenerationUtils.cameraPreset.label ?? ''}
+                        control={control}
+                        setValue={setValue}
+                        width="450px"
+                        field={videoGenerationUtils.cameraPreset as chipGroupFieldsI}
+                        required={false}
+                      />
+                    </Box>
+                  </AccordionDetails>
+                )
+              }
+              {
+                // Advanced features (interpolation, camera preset) are only available for Veo 2 for now!
+                isOnlyITVavailable && (
+                  <AccordionDetails sx={{ pt: 0, pb: 1, height: 'auto' }}>
+                    <Stack
+                      direction="row"
+                      flexWrap="wrap"
+                      justifyContent="flex-start"
+                      alignItems="flex-start"
+                      spacing={0.5}
+                      sx={{ pt: 1, pb: 1 }}
+                    >
+                      <VideoInterpolBox
+                        label="Base image"
+                        sublabel={'(input)'}
+                        objectKey="interpolImageFirst"
+                        onNewErrorMsg={onNewErrorMsg}
+                        setValue={setValue}
+                        interpolImage={interpolImageFirst}
+                        orientation={orientation}
+                      />
+                      <Typography
+                        color={palette.warning.main}
+                        sx={{ fontSize: '0.85rem', fontWeight: 400, pt: 2, width: '70%' }}
                       >
-                        <VideoInterpolBox
-                          label="Base image"
-                          sublabel={'(input)'}
-                          objectKey="interpolImageFirst"
-                          onNewErrorMsg={onNewErrorMsg}
-                          setValue={setValue}
-                          interpolImage={interpolImageFirst}
-                          orientation={orientation}
-                        />
-                        <Typography
-                          color={palette.warning.main}
-                          sx={{ fontSize: '0.85rem', fontWeight: 400, pt: 2, width: '70%' }}
-                        >
-                          {
-                            'For now, Veo 3 does not support Image Interpolation and Camera Presets, switch to Veo 2 to use them!'
-                          }
-                        </Typography>
-                      </Stack>
-                    </AccordionDetails>
-                  )
-                }
-              </Accordion>
-            )}
+                        {
+                          'For now, Veo 3 does not support Image Interpolation and Camera Presets, switch to Veo 2 to use them!'
+                        }
+                      </Typography>
+                    </Stack>
+                  </AccordionDetails>
+                )
+              }
+            </Accordion>
+          )}
           <Accordion
             disableGutters
             defaultExpanded
@@ -747,11 +763,11 @@ export default function GenerateForm({
                 />
                 <FormInputChipGroup
                   name="secondary_style"
-                  label={subImgStyleField(control).label}
+                  label={subImgStyleField.label}
                   control={control}
                   setValue={setValue}
                   width="400px"
-                  field={subImgStyleField(control)}
+                  field={subImgStyleField}
                   required={false}
                 />
               </Stack>
