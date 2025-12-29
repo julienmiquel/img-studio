@@ -28,6 +28,7 @@ export interface GenerateVideoFormFieldsI {
   negativePrompt: GenerateFieldI1
   seedNumber: GenerateFieldI1
   aspectRatio: GenerateFieldI1
+  resolution: GenerateFieldI1
   durationSeconds: GenerateFieldI1
   personGeneration: GenerateFieldI1
   style: GenerateFieldStyleI
@@ -55,10 +56,17 @@ export const GenerateVideoFormFields = {
       {
         value: 'veo-3.0-generate-preview',
         label: 'Veo 3',
+        indication: 'Standard model version: Text-to-video & Image-to-video + Audio',
+      },
+      {
+        value: 'veo-3.0-fast-generate-preview',
+        label: 'Veo 3 Fast',
+        indication: 'Low latency model version: Text-to-video + Audio',
       },
       {
         value: 'veo-2.0-generate-001',
         label: 'Veo 2',
+        indication: 'Standard model version: Text-to-video & Image-to-video',
       },
     ],
     isDataResetable: false,
@@ -73,7 +81,7 @@ export const GenerateVideoFormFields = {
   sampleCount: {
     label: 'Quantity of outputs',
     type: 'chip-group',
-    default: '1',
+    default: '4',
     options: ['1', '2', '3', '4'],
     isDataResetable: false,
     isFullPromptAdditionalField: false,
@@ -94,6 +102,14 @@ export const GenerateVideoFormFields = {
     type: 'chip-group',
     default: '16:9',
     options: ['16:9', '9:16'],
+    isDataResetable: false,
+    isFullPromptAdditionalField: false,
+  },
+  resolution: {
+    label: 'Resolution',
+    type: 'chip-group',
+    default: '720p',
+    options: ['720p'],
     isDataResetable: false,
     isFullPromptAdditionalField: false,
   },
@@ -370,6 +386,7 @@ export const videoGenerationUtils: VideoGenerationFieldsI = {
   model: GenerateVideoFormFields.modelVersion,
   settings: {
     aspectRatio: GenerateVideoFormFields.aspectRatio,
+    resolution: GenerateVideoFormFields.resolution,
     durationSeconds: GenerateVideoFormFields.durationSeconds,
     sampleCount: GenerateVideoFormFields.sampleCount,
   },
@@ -398,8 +415,8 @@ export const tempVeo3specificSettings = {
   sampleCount: {
     label: 'Quantity of outputs',
     type: 'chip-group',
-    default: '1',
-    options: ['1', '2'],
+    default: '4',
+    options: ['1', '2', '3', '4'],
     isDataResetable: false,
     isFullPromptAdditionalField: false,
   },
@@ -407,7 +424,7 @@ export const tempVeo3specificSettings = {
     label: 'Aspect ratio',
     type: 'chip-group',
     default: '16:9',
-    options: ['16:9'],
+    options: ['16:9', '9:16'],
     isDataResetable: false,
     isFullPromptAdditionalField: false,
   },
@@ -415,8 +432,16 @@ export const tempVeo3specificSettings = {
     label: 'Video duration (seconds)',
     type: 'chip-group',
     default: '8',
-    options: ['8'],
+    options: ['4', '6', '8'],
     isDataResetable: true,
+    isFullPromptAdditionalField: false,
+  },
+  resolution: {
+    label: 'Resolution',
+    type: 'chip-group',
+    default: '1080p',
+    options: ['720p', '1080p'],
+    isDataResetable: false,
     isFullPromptAdditionalField: false,
   },
 }
@@ -431,6 +456,7 @@ export interface GenerateVideoFormI {
   seedNumber: string
   aspectRatio: string
   durationSeconds: string
+  resolution: string
   personGeneration: string
   style: string
   secondary_style: string
@@ -449,6 +475,7 @@ export interface VideoI {
   src: string
   gcsUri: string
   ratio: string
+  resolution: string
   duration: number
   thumbnailGcsUri: string
   width: number
@@ -510,6 +537,7 @@ export interface VeoModelResultI {
 export interface BuildVideoListParams {
   videosInGCS: VeoModelResultI[]
   aspectRatio: string
+  resolution: string
   duration: number
   width: number
   height: number
